@@ -1,0 +1,23 @@
+{
+  "name": "live-video",
+  "version": "0.0.1",
+  "description": "Manage live video sources on the network.  Supports transcoding (need FFMPEG), recording into files, and streaming (e.g., to a database).  Multiple sources could be mosaicked and synchronized by capture time.",
+  "main": "index.js",
+  "dependencies": {
+    "fluent-ffmpeg": "^2.1.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Haimo Zhang <zh.hammer.dev@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haimoz/live-video.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haimoz/live-video/issues"
+  },
+  "homepage": "https://github.com/haimoz/live-video#readme"
+}
