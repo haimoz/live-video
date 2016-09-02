@@ -7,156 +7,211 @@ var ffmpeg = require('fluent-ffmpeg');
 var url = require('url');
 
 /**
- * FFMPEG presets used in this module
+ * Configure an FFMPEG command, in an incremental fashion, i.e., which will not
+ * reset untouched configurations.
+ */
+var config = function() {
+  var cmd = arguments[0];
+  for (i = 1; i < arguments.length; ++i) {
+    cmd = arguments[i](cmd);
+  }
+  return cmd;
+};
+
+/**
+ * FFMPEG configurations used in this module
  */
 var live_capture = function(cmd) {
+  console.log('config: live_capture');
   return cmd
     .videoFilters(
     {
       filter: 'setpts',
-      options: ['RTCTIME / (TB * 1000000)']  // in live capture, the PTS is considered to be the time the server receives the frame
+      // In live capture, the PTS is considered to be the time when the server
+      // receives the frame.
+      options: ['\'RTCTIME / (TB * 1000000)\'']
     });
 };
 var to_stream = function(cmd) {
+  console.log('config: to_stream');
   return cmd
-    // mp4 container does not work with streams
-    // the fix below is according to:
-    // https://github.com/fluent-ffmpeg/node-fluent-ffmpeg/issues/346
-    // NOTE: It would make the video unseekable.
-    .outputOptions('-movflags frag_keyframe+empty_moov');
+    //// Option 1: Use a container that supports streaming, but will disable
+    ////           seeking, and seems to force the start time to be zero.
+    //// mp4 container does not work with streams
+    //// the flags below is according to:
+    //// https://github.com/fluent-ffmpeg/node-fluent-ffmpeg/issues/346
+    //// NOTE: It would make the video unseekable.
+    //.outputOptions('-movflags frag_keyframe+empty_moov');
+    // Option 2: Stream the raw data, keeping as much timing information as
+    //           possible.
+    .format('rawvideo');
 };
 var export_video = function(cmd) {
+  console.log('config: export_video');
   return cmd
     .videoFilters({
       filter: 'setpts',
-      options: ['PTS-STARTPTS']
+      options: ['\'PTS-STARTPTS\'']
     });
 };
 var to_file = function(cmd) {
-  return cmd;
+  console.log('config: to_file');
+  return cmd.format('mp4');
 };
-var encoded_in = function(encoder='mpeg4') {
-  return (cmd) => {
-    return cmd.codec(encoder);
+var encoded_in = function(encoder) {
+  return function(cmd) {
+    console.log('config: encoded_in ' + encoder);
+    return cmd.videoCodec(encoder);
   };
 };
-var contained_in = function(container='mp4') {
-  return (cmd) => {
+var contained_in = function(container) {
+  return function(cmd) {
+    console.log('config: contained_in ' + container);
     return cmd.format(container);
   };
 };
-
-/**
- * After the input and output is configured, record the video.
- */
-var record = function(vid) {
-  vid.processor.input(vid.input_stream);
-  if (vid.dst_type === 'file') {
-    return vid.processor.clone().preset(to_file).save(vid.dst);
-  } else {
-    return vid.processor.clone().preset(to_stream).pipe(vid.dst);
-  }
+var debug_command = function(cmd) {
+  console.log('config: debug_command');
+  return cmd.on('start', function(commandLine) {
+    console.log('[FFMPEG command] : ' + commandLine);
+  });
 };
 
 /**
  * Define a video source that could be a file, a stream, or a web address.
  */
+var LiveVideo_default_processor = config(
+    ffmpeg(),
+    debug_command,
+    live_capture,
+    encoded_in('mpeg4'));
 var LiveVideo = function(name) {
-  this.src = null;
-  this.dst = null;
-  this.src_type = null;  // either 'http' or 'file'
-  this.dst_type = null;  // either 'stream' or 'file'
-  this.processor = ffmpeg().preset(encoded_in()).preset(contained_in());
-  // first decide the meaning of the name
-  var src_addr = url.parse(name);
-  // Javascript uses strict comparison (`===`) for switch statements.
-  // Therefore, it is safe to use the switch statement here.
-  switch (src_addr.protocol) {
-  case null:
-  case 'file:':
-    this.src = src_addr.path + src_addr.hash;
-    this.src_type = 'file';
-    break;
-  case 'http:':
-  case 'https:':
-    this.src = src_addr.href;
-    this.src_type = 'http';
-    break;
-  default:
-    throw 'Unknown protocol "' + src_addr.protocol + '"';
-  }
-  this.to = function(dst) {
-    this.dst = dst;
-    if (typeof(dst) === 'string') {
-      this.dst_type = 'file';
-    } else {
-      this.dst_type = 'stream';
+  var obj = {
+    processor: LiveVideo_default_processor.clone().input(name),
+    to: function(dst) {
+      var newObj = LiveVideo(name);
+      newObj.processor.output(dst);
+      config(
+          newObj.processor,
+          typeof(dst) === 'string' ? to_file : to_stream);
+      return newObj;
+    },
+    start: function() {
+      this.processor.run();
+      return this;
+    },
+    stop: function() {
+      this.processor.kill('SIGINT');
+      return this;
     }
-    return this;
   };
-  this.start = function() {
-    if (this.src_type === 'http') {
-      var req = http.request(this.src, (res) => {
-        this.input_stream = res;
-        record(this);
-      });
-      req.end();
-    } else {
-      this.input_stream = fs.createReadStream(this.src);
-      record(this);
-    }
-    return this;
-  };
-  this.stop = function() {
-    this.input_stream.emit('end');
-    return this;
-  };
-  return this;
+  return obj;
 };
 
+var VideoRecord_default_processor = config(
+    ffmpeg(),
+    export_video,
+    to_file,
+    encoded_in('mpeg4'),
+    contained_in('mp4'));
 var VideoRecord = function(stream) {
-  this.input_stream = stream;
-  this.processor = ffmpeg(stream).preset(export_video).preset(to_file);
-  this.export_to_file = function(path) {
-    return this.processor.clone().save(path);
+  var obj = {
+    processor: VideoRecord_default_processor.clone().input(stream),
+    export_to_file: function(path) {
+      return this.processor.clone().output(path);
+    }
   };
-  return this;
+  return obj;
 };
 
-var fit_to = function(height, width) {
-  return
-    'scale=min(iw*' + height + '/ih\\,' + width + '):min(' + height + '\\,ih*' + width + '/iw),' +
-    'pad=' + width + ':' + height + ':(' + width + '-iw)/2:(' + height + '-ih)/2';
+var fit_to = function(width, height) {
+  return 'scale=\'min(iw*' + height + '/ih\\,' + width + ')\':\'min(' + height + '\\,ih*' + width + '/iw)\', ' +
+    'pad=\'' + width + '\':\'' + height + '\':\'(' + width + '-iw)/2\':\'(' + height + '-ih)/2\'';
 };
 
-var VideoMosaic = function(stream_NW, stream_NE, stream_SW, stream_SE) {
-  this.streams = [stream_NW, stream_NE, stream_SW, stream_SE];
-  this.export_to_file = function(path, height=1920, width=1080) {
-    cell_height = height / 2;
-    cell_width = width / 2;
-    return ffmpeg()
-      .input(this.streams[0])
-      .input(this.streams[1])
-      .input(this.streams[2])
-      .input(this.streams[3])
-      .complexFilter([
-          'nullsrc=s=' + height + 'x' + width + '[background]',
-          fit_to(cell_height, cell_width) + '[nw]',
-          fit_to(cell_height, cell_width) + '[ne]',
-          fit_to(cell_height, cell_width) + '[sw]',
-          fit_to(cell_height, cell_width) + '[se]',
-          '[background][nw] overlay [tmp1]',
-          '[tmp1][ne] overlay=x=' + cell_width + ' [tmp2]',
-          '[tmp2][sw] overlay=y=' + cell_height + ' [tmp3]',
-          '[tmp3][se] overlay=x=' + cell_width + ':y=' + cell_height
-      ])
-      .preset(export_video)
-      .preset(to_file)
-      .save(path);
+var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
+  var tempFilePath = '.tmp.in_progress.mosaic.DO_NOT_DELETE';
+  var obj = {
+    src: [src_NW, src_NE, src_SW, src_SE],
+    export_to_file: function(path, height, width, cb) {
+      if (height === undefined) {
+        height = 1440;
+      }
+      if (width === undefined) {
+        width = 1920;
+      }
+      cell_height = height / 2;
+      cell_width = width / 2;
+      this.processor = config(ffmpeg()
+        .input(this.src[0])
+        .input(this.src[1])
+        .input(this.src[2])
+        .input(this.src[3])
+        .complexFilter([
+            'nullsrc=s=' + width + 'x' + height + ' [background];' +
+            '[0] ' + fit_to(cell_width, cell_height) + ' [nw];' +
+            '[1] ' + fit_to(cell_width, cell_height) + ' [ne];' +
+            '[2] ' + fit_to(cell_width, cell_height) + ' [sw];' +
+            '[3] ' + fit_to(cell_width, cell_height) + ' [se];' +
+            '[background][nw] overlay=shortest=1 [tmp1];' +
+            '[tmp1][ne] overlay=shortest=1:x=' + cell_width + ' [tmp2];' +
+            '[tmp2][sw] overlay=shortest=1:y=' + cell_height + ' [tmp3];' +
+            '[tmp3][se] overlay=shortest=1:x=' + cell_width + ':y=' + cell_height + ', setpts=\'(RTCTIME-RTCSTART)/(TB*1000000)\''
+        ])
+        .on('start', function(cmdLn) {
+          console.log('[FFMPEG] : ' + cmdLn);
+        })
+        .on('error', function(err, stdout, stderr) {
+          console.log('LiveVideoMosaic encountered a problem: ' + err.message);
+          var fn = cb || function() {};
+          fn(err, stdout, stderr);
+        })
+        .on('end', cb || function() {}),
+        to_file,
+        encoded_in('mpeg4'))
+        //.config(export_video)
+        //.preset(export_video)
+        //.config(to_file)
+        //.preset(to_file)
+        .output(path);
+      return this;
+    },
+    export_to_stream: function(stream, height, width, cb) {
+      this.export_to_file(tempFilePath, height, width, function(stdout, stderr) {
+        console.log('LiveVideoMosaic created as a temporary file: ' + tempFilePath);
+        console.log('Streaming temporary mosaic file "' + tempFilePath + '" ...');
+        fs.createReadStream(tempFilePath)
+          .on('end', function() {
+            console.log('Streaming of the mosaicked video file "' + tempFilePath + '" finished.');
+            console.log('Removing temporary file for mosaic video: "' + tempFilePath + '" ...');
+            fs.unlink(tempFilePath, function(err) {
+              if (err) {
+                console.log('Unable to remove temporary file for mosaic video: "' + tempFilePath + '" : ' +
+                    err.message);
+              } else {
+                console.log('Successfully removed temporary file for mosaic video: "' + tempFilePath + '"');
+              }
+            });
+          })
+          .on('error', function(err) {
+            console.log('Error encountered when streaming the mosaicked video file "' + tempFilePath + '": ' + err.message);
+          })
+          .pipe(stream);
+      });
+      return this;
+    },
+    start: function() {
+      this.processor.run();
+      return this;
+    },
+    stop: function() {
+      this.processor.kill('SIGINT');
+      return this;
+    }
   };
-  return this;
+  return obj;
 };
 
 module.exports.LiveVideo = LiveVideo;
 module.exports.VideoRecord = VideoRecord;
-module.exports.VideoMosaic = VideoMosaic;
+module.exports.LiveVideoMosaic = LiveVideoMosaic;
