@@ -80,20 +80,26 @@ var debug_command = function(cmd) {
 /**
  * Define a video source that could be a file, a stream, or a web address.
  */
-var LiveVideo_default_processor = config(
-    ffmpeg(),
-    debug_command,
-    live_capture,
-    encoded_in('mpeg4'));
-var LiveVideo = function(name) {
+var VideoSource = function(name) {
   var obj = {
-    processor: LiveVideo_default_processor.clone().input(name),
-    to: function(dst) {
-      var newObj = LiveVideo(name);
+    processor: ffmpeg(name)
+      .videoCodec('copy')
+      .on('error', function(err) {
+        console.log('[Transcoding error in VideoSource] : ' + err.message);
+      }),
+    to: function(dst, format) {
+      var newObj = VideoSource(name);
       newObj.processor.output(dst);
-      config(
-          newObj.processor,
-          typeof(dst) === 'string' ? to_file : to_stream);
+      if (typeof(dst) === 'string') {
+        // container format for file output
+        newObj.processor.format(format || 'mp4');
+      } else {
+        throw {message: 'Output to stream not supported!'};
+        // container format for stream output
+        //newObj.processor.format(format || 'rawvideo');
+        // alternatively, use the mpegts container as in streaming
+        //newObj.processor.format(format || 'rtp_mpegts');
+      }
       return newObj;
     },
     start: function() {
@@ -108,41 +114,34 @@ var LiveVideo = function(name) {
   return obj;
 };
 
-var VideoRecord_default_processor = config(
-    ffmpeg(),
-    export_video,
-    to_file,
-    encoded_in('mpeg4'),
-    contained_in('mp4'));
-var VideoRecord = function(stream) {
-  var obj = {
-    processor: VideoRecord_default_processor.clone().input(stream),
-    export_to_file: function(path) {
-      return this.processor.clone().output(path);
-    }
-  };
-  return obj;
-};
-
 var fit_to = function(width, height) {
   return 'scale=\'min(iw*' + height + '/ih\\,' + width + ')\':\'min(' + height + '\\,ih*' + width + '/iw)\', ' +
     'pad=\'' + width + '\':\'' + height + '\':\'(' + width + '-iw)/2\':\'(' + height + '-ih)/2\'';
 };
 
-var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
-  var tempFilePath = '.tmp.in_progress.mosaic.DO_NOT_DELETE';
+var VideoMosaic = function(file_NW, file_NE, file_SW, file_SE) {
+  var tempFilePrefix = '.tmp.VideoMosaic.';
   var obj = {
-    src: [src_NW, src_NE, src_SW, src_SE],
-    export_to_file: function(path, height, width, cb) {
-      if (height === undefined) {
-        height = 1440;
+    src: [file_NW, file_NE, file_SW, file_SE],
+    export_to_file: function(path, width, height, cb) {
+      // make sure that the streams are output as files
+      this.seq_commands = [];  // commands that need to be run sequentially in a mosaic production pipeline
+      for (i = 0; i < this.src.length; ++i) {
+        if (typeof(this.src[i]) !== 'string') {
+          var tmp_name = tempFilePrefix + i;
+          var curr_cmd = VideoSource(this.src[i]).to(tmp_name).processor;
+          src[i] = tmp_name;
+          if (this.seq_commands.length !== 0) {
+            this.seq_commands[this.seq_commands.length - 1].on('end', curr_cmd.run);
+          }
+          this.seq_commands.push(curr_cmd);
+        }
       }
-      if (width === undefined) {
-        width = 1920;
-      }
-      cell_height = height / 2;
-      cell_width = width / 2;
-      this.processor = config(ffmpeg()
+      height = height || 1440;
+      width = width || 1920;
+      var cell_height = height / 2;
+      var cell_width = width / 2;
+      var processor = ffmpeg()
         .input(this.src[0])
         .input(this.src[1])
         .input(this.src[2])
@@ -156,62 +155,80 @@ var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
             '[background][nw] overlay=shortest=1 [tmp1];' +
             '[tmp1][ne] overlay=shortest=1:x=' + cell_width + ' [tmp2];' +
             '[tmp2][sw] overlay=shortest=1:y=' + cell_height + ' [tmp3];' +
-            '[tmp3][se] overlay=shortest=1:x=' + cell_width + ':y=' + cell_height + ', setpts=\'(RTCTIME-RTCSTART)/(TB*1000000)\''
+            '[tmp3][se] overlay=shortest=1:x=' + cell_width + ':y=' + cell_height + ', setpts=\'PTS-STARTPTS\''
         ])
+        .videoCodec('mpeg4')
+        .format('mp4')
         .on('start', function(cmdLn) {
-          console.log('[FFMPEG] : ' + cmdLn);
+          console.log('[FFMPEG]:\n' + cmdLn);
         })
         .on('error', function(err, stdout, stderr) {
-          console.log('LiveVideoMosaic encountered a problem: ' + err.message);
-          var fn = cb || function() {};
-          fn(err, stdout, stderr);
+          console.log('VideoMosaic encountered a problem: ' + err.message);
         })
-        .on('end', cb || function() {}),
-        to_file,
-        encoded_in('mpeg4'))
-        //.config(export_video)
-        //.preset(export_video)
-        //.config(to_file)
-        //.preset(to_file)
+        .on('end', cb || function() {})
         .output(path);
-      return this;
-    },
-    export_to_stream: function(stream, height, width, cb) {
-      this.export_to_file(tempFilePath, height, width, function(stdout, stderr) {
-        console.log('LiveVideoMosaic created as a temporary file: ' + tempFilePath);
-        console.log('Streaming temporary mosaic file "' + tempFilePath + '" ...');
-        fs.createReadStream(tempFilePath)
-          .on('end', function() {
-            console.log('Streaming of the mosaicked video file "' + tempFilePath + '" finished.');
-            console.log('Removing temporary file for mosaic video: "' + tempFilePath + '" ...');
-            fs.unlink(tempFilePath, function(err) {
-              if (err) {
-                console.log('Unable to remove temporary file for mosaic video: "' + tempFilePath + '" : ' +
-                    err.message);
-              } else {
-                console.log('Successfully removed temporary file for mosaic video: "' + tempFilePath + '"');
-              }
-            });
-          })
-          .on('error', function(err) {
-            console.log('Error encountered when streaming the mosaicked video file "' + tempFilePath + '": ' + err.message);
-          })
-          .pipe(stream);
-      });
-      return this;
-    },
-    start: function() {
-      this.processor.run();
-      return this;
-    },
-    stop: function() {
-      this.processor.kill('SIGINT');
-      return this;
+      if (this.seq_commands.length !== 0) {
+        this.seq_commands[this.seq_commands.length - 1].on('end', processor.run);
+      }
+      this.seq_commands.push(processor);
+      this.seq_commands[0].run();
     }
   };
   return obj;
 };
 
-module.exports.LiveVideo = LiveVideo;
-module.exports.VideoRecord = VideoRecord;
+var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
+  var tempFilePrefix = '.tmp.LiveVideoMosaic.';
+  var _files = [
+    tempFilePrefix + '0',
+    tempFilePrefix + '1',
+    tempFilePrefix + '2',
+    tempFilePrefix + '3'
+  ];
+  var _src = [
+    VideoSource(src_NW).to(_files[0]),
+    VideoSource(src_NE).to(_files[1]),
+    VideoSource(src_SW).to(_files[2]),
+    VideoSource(src_SE).to(_files[3])
+  ];
+  return {
+    files: _files,
+    src: _src,
+    start: function() {
+      for (i = 0; i < this.src.length; ++i) {
+        this.src[i].start();
+      }
+      return this;
+    },
+    stop: function(callback) {
+      var create_mosaic = (function() {
+        var num_finished = 0;
+        return function() {
+          if (++num_finished === 4) {
+            var mosaic = VideoMosaic(
+                _files[0],
+                _files[1],
+                _files[2],
+                _files[3]);
+            var mosaic_file_name = tempFilePrefix + 'mosaic.mp4';
+            callback = callback || function () {};
+            mosaic.export_to_file(mosaic_file_name, 1920, 1440, function() {
+              callback(_files[0], _files[1], _files[2], _files[3], mosaic_file_name);
+            });
+          }
+        };
+      })();
+      for (i = 0; i < this.src.length; ++i) {
+        this.src[i].processor.on('error', create_mosaic);
+      }
+      for (i = 0; i < this.src.length; ++i) {
+        this.src[i].stop();
+      }
+      return this;
+    }
+  };
+};
+
+module.exports.VideoSource = VideoSource;
+module.exports.VideoMosaic = VideoMosaic;
 module.exports.LiveVideoMosaic = LiveVideoMosaic;

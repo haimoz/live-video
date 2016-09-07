@@ -6,15 +6,30 @@ on the network.
 
 ```javascript
 var lv = require('live-video');
+
+// Set up the four sources for video mosaicing
 var m = lv.LiveVideoMosaic(
-    'http://www.a.com/v.mjpg',
-    'http://www.b.com/v.mjpg',
-    'http://www.c.com/v.mjpg',
+    'http://www.a.com/v',
+    'rtsp://www.b.com:8554/v',
+    'rtmp://www.c.com/channel:user:password',
     'http://www.d.com/v.mjpg');
-m.export_to_stream(a_writable_stream);
+
+// When the video mosaic is asked to start, it merely starts saving the sources
+// (file, network, or stream) to four local files.
 m.start();
+
+// Upon stopping, the four local files will be saved.  Then another `ffmpeg`
+// process starts creating the mosaic video from the four separate videos.
+// The callback function for the `stop` method received the paths of the four
+// separate video files, and the path of the mosaic video.
 setTimeout(function() {
-  m.stop();
+  m.stop(function(v0, v1, v2, v3, v) {
+    console.log('Upper-left video file path: ' + v0);
+    console.log('Upper-right video file path: ' + v1);
+    console.log('Lower-left video file path: ' + v2);
+    console.log('Lower-right video file path: ' + v3);
+    console.log('Mosaic video file path: ' + v);
+  });
   console.log('done');
 });
 ```
