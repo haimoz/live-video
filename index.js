@@ -21,7 +21,7 @@ var config = function() {
 /**
  * FFMPEG configurations used in this module
  */
-var live_capture = function(cmd) {
+var mjpeg_capture = function(cmd) {
   console.log('config: live_capture');
   return cmd
     .videoFilters(
@@ -29,7 +29,7 @@ var live_capture = function(cmd) {
       filter: 'setpts',
       // In live capture, the PTS is considered to be the time when the server
       // receives the frame.
-      options: ['\'RTCTIME / (TB * 1000000)\'']
+      options: ['\'(RTCTIME - RTCSTART) / (TB * 1000000)\'']
     });
 };
 var to_stream = function(cmd) {
@@ -83,7 +83,6 @@ var debug_command = function(cmd) {
 var VideoSource = function(name) {
   var obj = {
     processor: ffmpeg(name)
-      .videoCodec('copy')
       .on('error', function(err) {
         console.log('[Transcoding error in VideoSource] : ' + err.message);
       }),
@@ -111,6 +110,11 @@ var VideoSource = function(name) {
       return this;
     }
   };
+  if (name.endsWith('mjpg') || name.endsWith('mjpeg')) {
+    obj.processor.videoCodec('mpeg4').videoFilters('setpts=\'(RTCTIME - RTCSTART) / (TB * 1000000)\'');
+  } else {
+    obj.processor.videoCodec('copy');
+  }
   return obj;
 };
 
