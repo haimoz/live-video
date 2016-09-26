@@ -183,12 +183,12 @@ var VideoMosaic = function(file_NW, file_NE, file_SW, file_SE) {
 };
 
 var ensurePath = function(path) {
-  if (path === undefined) {
-    return undefined;
+  if (path === undefined || path === '/' || path === '.') {
+    return path;
   }
   var parent_dir = path_module.dirname(path);
   try {
-    fs.statSync(parent_dir);
+    fs.statSync(ensurePath(parent_dir));
   } catch (e) {
     fs.mkdirSync(parent_dir);
   }
