@@ -5,6 +5,7 @@ var http = require('http');
 var fs = require('fs');
 var ffmpeg = require('fluent-ffmpeg');
 var url = require('url');
+var path_module = require('path');
 
 /**
  * Configure an FFMPEG command, in an incremental fashion, i.e., which will not
@@ -181,13 +182,26 @@ var VideoMosaic = function(file_NW, file_NE, file_SW, file_SE) {
   return obj;
 };
 
-var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
+var ensurePath = function(path) {
+  if (path === undefined) {
+    return undefined;
+  }
+  var parent_dir = path_module.dirname(path);
+  try {
+    fs.statSync(parent_dir);
+  } catch (e) {
+    fs.mkdirSync(parent_dir);
+  }
+  return path;
+};
+
+var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE, dst_NW, dst_NE, dst_SW, dst_SE, dst_mosaic) {
   var tempFilePrefix = '.tmp.LiveVideoMosaic.';
   var _files = [
-    tempFilePrefix + '0',
-    tempFilePrefix + '1',
-    tempFilePrefix + '2',
-    tempFilePrefix + '3'
+    ensurePath(dst_NW) || (tempFilePrefix + '0'),
+    ensurePath(dst_NE) || (tempFilePrefix + '1'),
+    ensurePath(dst_SW) || (tempFilePrefix + '2'),
+    ensurePath(dst_SE) || (tempFilePrefix + '3')
   ];
   var _src = [
     VideoSource(src_NW).to(_files[0]),
@@ -214,7 +228,7 @@ var LiveVideoMosaic = function(src_NW, src_NE, src_SW, src_SE) {
                 _files[1],
                 _files[2],
                 _files[3]);
-            var mosaic_file_name = tempFilePrefix + 'mosaic.mp4';
+            var mosaic_file_name = ensurePath(dst_mosaic) || (tempFilePrefix + 'mosaic.mp4');
             callback = callback || function () {};
             mosaic.export_to_file(mosaic_file_name, 1920, 1440, function() {
               callback(_files[0], _files[1], _files[2], _files[3], mosaic_file_name);

@@ -12,7 +12,12 @@ var m = lv.LiveVideoMosaic(
     'http://www.a.com/v',
     'rtsp://www.b.com:8554/v',
     'rtmp://www.c.com/channel:user:password',
-    'http://www.d.com/v.mjpg');
+    'http://www.d.com/v.mjpg',
+    'path/of/file/to/save/1st/source/to',     // If any destination file is not
+    'path/of/file/to/save/2nd/source/to',     // specified, it will be saved to
+    'path/of/file/to/save/3rd/source/to',     // a temporary file.
+    'path/of/file/to/save/4th/source/to',
+    'path/of/file/to/save/video/mosaic/to');
 
 // When the video mosaic is asked to start, it merely starts saving the sources
 // (file, network, or stream) to four local files.
